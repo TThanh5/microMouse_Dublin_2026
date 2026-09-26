@@ -1,29 +1,22 @@
 /*
  * ==============================================================================
- * MICROMOUSE ESP32-C6: FULL SENSOR BENCH (3x ToF VL53L0X + MPU-6050 IMU)
- * Spec: MICROMOUSE_MASTER_PROMPT.md (with Right XSHUT updated to GPIO 5)
+ * MICROMOUSE ESP32-C6: FULL SENSOR SUITE DIAGNOSTIC TEST (ROBUST)
+ * Authoritative Spec: MICROMOUSE_MASTER_PROMPT.md
+ * Target: ESP32-C6 DevKitC-1
  * ==============================================================================
  *
- * HARDWARE WIRING:
- * - Common I2C Bus:
- *     ESP32-C6 GPIO 6  --> SDA (Shared by all 4 sensors)
- *     ESP32-C6 GPIO 7  --> SCL (Shared by all 4 sensors)
- *     ESP32-C6 3.3V    --> VCC (Shared by all 4 sensors)
- *     ESP32-C6 GND     --> GND (Shared by all 4 sensors)
+ * HARDWARE MAPPING:
+ * - I2C SDA       : GPIO 6
+ * - I2C SCL       : GPIO 7
+ * - ToF Left      : XSHUT = GPIO 10  (Address: 0x30)
+ * - ToF Front     : XSHUT = GPIO 11  (Address: 0x31)
+ * - ToF Right     : XSHUT = GPIO 5   (Address: 0x32)
+ * - IMU MPU-6050  : Address: 0x68
  *
- * - VL53L0X XSHUT Pins (Sequential Address Assignment):
- *     ESP32-C6 GPIO 10 --> Left  ToF XSHUT (Address remapped to 0x30)
- *     ESP32-C6 GPIO 11 --> Front ToF XSHUT (Address remapped to 0x31)
- *     ESP32-C6 GPIO 5  --> Right ToF XSHUT (Address remapped to 0x32)
- *
- * - MPU-6050:
- *     I2C Address: 0x68 (AD0 left unconnected or to GND)
- *
- * ARDUINO IDE SETTINGS:
+ * ARDUINO IDE:
  * - Board: "ESP32C6 Dev Module"
  * - Tools -> "USB CDC On Boot" -> "Enabled"
  * - Serial Monitor: 115200 baud
- * - Required Library: "Adafruit_VL53L0X" (install via Library Manager)
  * ==============================================================================
  */
 
@@ -31,21 +24,20 @@
 #include <Wire.h>
 #include <Adafruit_VL53L0X.h>
 
-// --- GPIO Pin Definitions ---
+// --- Authoritative GPIO Pins ---
 constexpr uint8_t PIN_I2C_SDA     = 6;
 constexpr uint8_t PIN_I2C_SCL     = 7;
 
 constexpr uint8_t PIN_XSHUT_LEFT  = 10;
-constexpr uint8_t PIN_XSHUT_FRONT = 11;
-constexpr uint8_t PIN_XSHUT_RIGHT = 5;  // Right ToF XSHUT kept on GPIO 5
+constexpr uint8_t PIN_XSHUT_FRONT = 5;   // Front ToF on GPIO 5
+constexpr uint8_t PIN_XSHUT_RIGHT = 11;  // Right ToF on GPIO 11
 
-// --- Target I2C Addresses ---
+// --- I2C Target Addresses ---
 constexpr uint8_t ADDR_TOF_LEFT   = 0x30;
 constexpr uint8_t ADDR_TOF_FRONT  = 0x31;
 constexpr uint8_t ADDR_TOF_RIGHT  = 0x32;
 constexpr uint8_t ADDR_MPU6050    = 0x68;
 
-// VL53L0X Sensor Instances
 Adafruit_VL53L0X loxLeft;
 Adafruit_VL53L0X loxFront;
 Adafruit_VL53L0X loxRight;
@@ -55,37 +47,54 @@ bool frontOk = false;
 bool rightOk = false;
 bool imuOk   = false;
 
-// Scan I2C bus and report status of all expected devices
-void scanI2CBus() {
-  Serial.println(F("\n--- [I2C BUS SCAN] (SDA=GPIO6, SCL=GPIO7) ---"));
+void scanI2CBus(const char *label) {
+  Serial.printf("\n--- [I2C BUS SCAN: %s] ---\n", label);
   uint8_t count = 0;
-
   for (uint8_t addr = 0x08; addr <= 0x77; addr++) {
     Wire.beginTransmission(addr);
     if (Wire.endTransmission() == 0) {
       Serial.printf(" > Found device at 0x%02X: ", addr);
-      if (addr == ADDR_TOF_LEFT)        Serial.println(F("[ToF LEFT  - Address OK (0x30)]"));
-      else if (addr == ADDR_TOF_FRONT)  Serial.println(F("[ToF FRONT - Address OK (0x31)]"));
-      else if (addr == ADDR_TOF_RIGHT)  Serial.println(F("[ToF RIGHT - Address OK (0x32)]"));
+      if (addr == ADDR_TOF_LEFT)        Serial.println(F("[ToF LEFT  - OK (0x30)]"));
+      else if (addr == ADDR_TOF_FRONT)  Serial.println(F("[ToF FRONT - OK (0x31)]"));
+      else if (addr == ADDR_TOF_RIGHT)  Serial.println(F("[ToF RIGHT - OK (0x32)]"));
       else if (addr == ADDR_MPU6050)    Serial.println(F("[MPU-6050 IMU - OK (0x68)]"));
-      else if (addr == 0x29)            Serial.println(F("[!] WARNING: Sensor still at DEFAULT 0x29 (XSHUT failure?)"));
-      else                              Serial.println(F("[Unknown device]"));
+      else if (addr == 0x29)            Serial.println(F("[ToF DEFAULT 0x29 (Not yet remapped!)]"));
+      else                              Serial.println(F("[Other I2C device]"));
       count++;
     }
   }
-
-  Serial.printf("Scan complete. %d device(s) found on I2C bus.\n", count);
-  if (count < 4) {
-    Serial.println(F("[!] Note: Expected 4 devices (0x30, 0x31, 0x32, 0x68). Check missing device wiring."));
-  }
-  Serial.println(F("---------------------------------------------\n"));
+  Serial.printf("Devices found: %d\n", count);
+  Serial.println(F("------------------------------------------\n"));
 }
 
-// Sequential initialization of the 3 VL53L0X sensors
-void initToFSensors() {
-  Serial.println(F("[ToF] Starting sequential initialization of 3 VL53L0X sensors..."));
+bool initSingleToF(Adafruit_VL53L0X &sensor, uint8_t xshutPin, uint8_t targetAddr, const char *name) {
+  Serial.printf("[ToF] Activating %s (XSHUT=GPIO %d)...\n", name, xshutPin);
+  digitalWrite(xshutPin, HIGH);
+  delay(60); // Allow sensor internal MCU to boot
 
-  // Step 1: Hold all XSHUT pins LOW to keep all sensors in shutdown
+  // Strategy 1: Attempt to begin directly with the target address
+  if (sensor.begin(targetAddr, false, &Wire)) {
+    Serial.printf(" > [OK] %s initialized at address 0x%02X\n", name, targetAddr);
+    return true;
+  }
+
+  // Strategy 2: If begin(target) failed, initialize at default 0x29 and setAddress
+  Serial.printf(" > [Fallback] Trying default 0x29 for %s...\n", name);
+  if (sensor.begin(0x29, false, &Wire)) {
+    if (sensor.setAddress(targetAddr)) {
+      Serial.printf(" > [OK] %s remapped from 0x29 -> 0x%02X\n", name, targetAddr);
+      return true;
+    }
+  }
+
+  Serial.printf(" > [ERROR] %s failed to respond!\n", name);
+  return false;
+}
+
+void initToFSensors() {
+  Serial.println(F("\n[ToF] === STARTING SEQUENTIAL VL53L0X INITIALIZATION ==="));
+
+  // Step 1: Put all 3 sensors into HARDWARE SHUTDOWN
   pinMode(PIN_XSHUT_LEFT, OUTPUT);
   pinMode(PIN_XSHUT_FRONT, OUTPUT);
   pinMode(PIN_XSHUT_RIGHT, OUTPUT);
@@ -93,64 +102,36 @@ void initToFSensors() {
   digitalWrite(PIN_XSHUT_LEFT, LOW);
   digitalWrite(PIN_XSHUT_FRONT, LOW);
   digitalWrite(PIN_XSHUT_RIGHT, LOW);
-  delay(30);
+  delay(150); // Crucial: allow internal capacitors to fully discharge
 
-  // Step 2: Wake up and initialize LEFT sensor (reassign 0x29 -> 0x30)
-  Serial.printf("[ToF] Enabling LEFT sensor (GPIO %d)...\n", PIN_XSHUT_LEFT);
-  digitalWrite(PIN_XSHUT_LEFT, HIGH);
-  delay(50);
-  if (loxLeft.begin(ADDR_TOF_LEFT, false, &Wire)) {
-    leftOk = true;
-    Serial.println(F(" > [OK] LEFT sensor remapped to 0x30."));
-  } else {
-    Serial.println(F(" > [ERROR] Failed to initialize LEFT sensor at 0x30!"));
-  }
+  // Step 2: Initialize LEFT sensor (GPIO 10 -> 0x30)
+  leftOk = initSingleToF(loxLeft, PIN_XSHUT_LEFT, ADDR_TOF_LEFT, "LEFT");
 
-  // Step 3: Wake up and initialize FRONT sensor (reassign 0x29 -> 0x31)
-  Serial.printf("[ToF] Enabling FRONT sensor (GPIO %d)...\n", PIN_XSHUT_FRONT);
-  digitalWrite(PIN_XSHUT_FRONT, HIGH);
-  delay(50);
-  if (loxFront.begin(ADDR_TOF_FRONT, false, &Wire)) {
-    frontOk = true;
-    Serial.println(F(" > [OK] FRONT sensor remapped to 0x31."));
-  } else {
-    Serial.println(F(" > [ERROR] Failed to initialize FRONT sensor at 0x31!"));
-  }
+  // Step 3: Initialize FRONT sensor (GPIO 11 -> 0x31)
+  frontOk = initSingleToF(loxFront, PIN_XSHUT_FRONT, ADDR_TOF_FRONT, "FRONT");
 
-  // Step 4: Wake up and initialize RIGHT sensor (reassign 0x29 -> 0x32)
-  Serial.printf("[ToF] Enabling RIGHT sensor (GPIO %d)...\n", PIN_XSHUT_RIGHT);
-  digitalWrite(PIN_XSHUT_RIGHT, HIGH);
-  delay(50);
-  if (loxRight.begin(ADDR_TOF_RIGHT, false, &Wire)) {
-    rightOk = true;
-    Serial.println(F(" > [OK] RIGHT sensor remapped to 0x32."));
-  } else {
-    Serial.println(F(" > [ERROR] Failed to initialize RIGHT sensor at 0x32!"));
-  }
+  // Step 4: Initialize RIGHT sensor (GPIO 5 -> 0x32)
+  rightOk = initSingleToF(loxRight, PIN_XSHUT_RIGHT, ADDR_TOF_RIGHT, "RIGHT");
 }
 
-// Initialize MPU-6050 IMU
 void initMPU6050() {
-  Serial.println(F("[IMU] Initializing MPU-6050 at 0x68..."));
-
+  Serial.println(F("\n[IMU] Initializing MPU-6050 at 0x68..."));
   Wire.beginTransmission(ADDR_MPU6050);
-  Wire.write(0x6B); // PWR_MGMT_1 register
-  Wire.write(0x00); // Wake up MPU-6050
+  Wire.write(0x6B); // PWR_MGMT_1
+  Wire.write(0x00); // Wake up
   uint8_t err = Wire.endTransmission();
-
   if (err == 0) {
     imuOk = true;
-    Serial.println(F(" > [OK] MPU-6050 active at 0x68."));
+    Serial.println(F(" > [OK] MPU-6050 woke up and responding!"));
   } else {
     imuOk = false;
-    Serial.printf(" > [ERROR] MPU-6050 failed to wake up! Error code: %d\n", err);
+    Serial.printf(" > [ERROR] MPU-6050 failed at 0x68 (Error code: %d)\n", err);
   }
 }
 
 void setup() {
   Serial.begin(115200);
 
-  // Handshake for ESP32-C6 native USB-CDC
   uint32_t t0 = millis();
   while (!Serial && (millis() - t0 < 3000)) {
     delay(10);
@@ -158,24 +139,27 @@ void setup() {
   delay(500);
 
   Serial.println(F("\n\n========================================================"));
-  Serial.println(F("  MICROMOUSE ESP32-C6: FULL SENSOR SUITE TEST BENCH     "));
-  Serial.println(F("  Sensors: 3x VL53L0X ToF (0x30,0x31,0x32) + MPU-6050  "));
+  Serial.println(F("   MICROMOUSE ESP32-C6: FULL SENSOR DIAGNOSTIC SUITE    "));
+  Serial.println(F("   Left=0x30 (GPIO10) | Front=0x31 (GPIO5) | Right=0x32 (GPIO11) "));
+  Serial.println(F("   IMU=0x68 (SDA=GPIO6, SCL=GPIO7)                      "));
   Serial.println(F("========================================================"));
 
-  // Initialize I2C Bus with timeout protection
+  // Initialize I2C Bus
   Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL, 100000);
   Wire.setTimeOut(100);
   delay(100);
 
-  // Initialize all sensors
+  // Scan before setup
+  scanI2CBus("PRE-INIT STATE");
+
+  // Initialize sensors sequentially
   initToFSensors();
   initMPU6050();
 
-  // Run I2C Bus Verification Scan
-  scanI2CBus();
+  // Scan after setup
+  scanI2CBus("FINAL CONFIGURATION");
 
-  Serial.println(F("Starting continuous live sensor stream (10 Hz):"));
-  Serial.println(F("Wave hands in front of Left, Front, Right sensors to test mm values."));
+  Serial.println(F("Streaming live distance & motion data (10 Hz):"));
   Serial.println(F("--------------------------------------------------------------------------------"));
 }
 
@@ -183,7 +167,7 @@ void loop() {
   uint16_t distLeft = 9999, distFront = 9999, distRight = 9999;
   bool validL = false, validF = false, validR = false;
 
-  // 1. Read Left ToF
+  // 1. Read Left
   if (leftOk) {
     VL53L0X_RangingMeasurementData_t m;
     loxLeft.rangingTest(&m, false);
@@ -193,7 +177,7 @@ void loop() {
     }
   }
 
-  // 2. Read Front ToF
+  // 2. Read Front
   if (frontOk) {
     VL53L0X_RangingMeasurementData_t m;
     loxFront.rangingTest(&m, false);
@@ -203,7 +187,7 @@ void loop() {
     }
   }
 
-  // 3. Read Right ToF
+  // 3. Read Right
   if (rightOk) {
     VL53L0X_RangingMeasurementData_t m;
     loxRight.rangingTest(&m, false);
@@ -213,7 +197,7 @@ void loop() {
     }
   }
 
-  // 4. Read MPU-6050
+  // 4. Read IMU
   float pitch = 0.0f, roll = 0.0f, gz = 0.0f;
   if (imuOk) {
     Wire.beginTransmission(ADDR_MPU6050);
@@ -239,21 +223,21 @@ void loop() {
     }
   }
 
-  // 5. Formatted Output in English
-  Serial.print(F("ToF [mm] -> L: "));
+  // Print results
+  Serial.print(F("ToF [mm] -> Left: "));
   if (validL) Serial.printf("%4d", distLeft); else Serial.print(F("----"));
 
-  Serial.print(F(" | F: "));
+  Serial.print(F(" | Front: "));
   if (validF) Serial.printf("%4d", distFront); else Serial.print(F("----"));
 
-  Serial.print(F(" | R: "));
+  Serial.print(F(" | Right: "));
   if (validR) Serial.printf("%4d", distRight); else Serial.print(F("----"));
 
   if (imuOk) {
-    Serial.printf("  ||  IMU -> Pitch:%+5.1f* Roll:%+5.1f* YawRate:%+6.1f dps",
+    Serial.printf("  ||  IMU: Pitch=%+5.1f* Roll=%+5.1f* YawRate=%+6.1f dps",
                   pitch, roll, gz);
   }
   Serial.println();
 
-  delay(100); // 10 Hz refresh
+  delay(100);
 }
