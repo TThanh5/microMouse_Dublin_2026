@@ -202,12 +202,14 @@ constexpr uint8_t PIN_I2C_SCL = 7;
 |---|---:|---:|
 | Left | GPIO 10 | `0x30` |
 | Front | GPIO 11 | `0x31` |
-| Right | GPIO 14 | `0x32` |
+| Right | GPIO 5 | `0x32` |
+
+*(Note: GPIO 14 is not physically broken out on the ESP32-C6-DevKitC-1 pin headers; Right XSHUT is assigned to GPIO 5).*
 
 ```cpp
 constexpr uint8_t PIN_XSHUT_LEFT  = 10;
 constexpr uint8_t PIN_XSHUT_FRONT = 11;
-constexpr uint8_t PIN_XSHUT_RIGHT = 14;
+constexpr uint8_t PIN_XSHUT_RIGHT = 5;
 ```
 
 ---
@@ -730,7 +732,7 @@ SCL = GPIO7
 VL53L0X XSHUT:
 Left  = GPIO10 → 0x30
 Front = GPIO11 → 0x31
-Right = GPIO14 → 0x32
+Right = GPIO5  → 0x32
 
 MPU-6050:
 0x68
