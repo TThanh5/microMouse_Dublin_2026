@@ -63,8 +63,8 @@ static bool initSingleToFSensor(Adafruit_VL53L0X &sensor, uint8_t xshutPin, uint
     }
   }
 
-  // Strategy 2: Present at default 0x29 -> remap to target address
-  if (foundAtDefault || sensor.begin(0x29, false, &Wire)) {
+  // Strategy 2: Initialize at default 0x29, then remap to target address
+  if (sensor.begin(0x29, false, &Wire)) {
     if (sensor.setAddress(targetAddr)) {
       Serial.printf(" > [OK] %s remapped 0x29 -> 0x%02X\n", name, targetAddr);
       return true;
