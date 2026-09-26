@@ -140,14 +140,22 @@ void initMPU() {
 
 void setup() {
   Serial.begin(115200);
-  delay(2000); // Chờ USB Serial trên ESP32-C6 kết nối ổn định
 
-  Serial.println(F("\n========================================================"));
+  // Đợi cổng USB-CDC trên ESP32-C6 nhận diện (tối đa 3 giây)
+  uint32_t t0 = millis();
+  while (!Serial && (millis() - t0 < 3000)) {
+    delay(10);
+  }
+  delay(500);
+
+  Serial.println(F("\n\n========================================================"));
   Serial.println(F("  CHƯƠNG TRÌNH TEST CẢM BIẾN: ToF VL53L0X & IMU MPU-6050 "));
+  Serial.println(F("  ESP32-C6 DEVKITC-1 - KẾT NỐI SERIAL THÀNH CÔNG!       "));
   Serial.println(F("========================================================"));
 
-  // Khởi động bus I2C trên GPIO 6 & GPIO 7
+  // Khởi động bus I2C trên GPIO 6 & GPIO 7 với Timeout chống treo
   Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL, 100000);
+  Wire.setTimeOut(100); // Tránh bị treo vi điều khiển nếu dây I2C lỏng
   delay(100);
 
   // Khởi tạo các cảm biến
