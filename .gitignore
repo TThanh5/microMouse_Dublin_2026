@@ -1,0 +1,19 @@
+# Binaries and large simulator builds
+windows/
+*.exe
+*.dll
+*.o
+*.a
+*.so
+
+# System & IDE files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Simulator folders (optional/skipped as per user request)
+mms-c/main.exe
+
+# Office temp lock files
+~$*
