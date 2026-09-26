@@ -1,147 +1,103 @@
 /*
  * ==============================================================================
- * MICROMOUSE ESP32-C6: SENSOR TEST BENCH (ToF VL53L0X + IMU MPU-6050)
- * Source of truth: MICROMOUSE_MASTER_PROMPT.md
+ * MICROMOUSE ESP32-C6: MPU-6050 IMU DIAGNOSTIC TEST (STANDALONE)
+ * Authoritative Spec: MICROMOUSE_MASTER_PROMPT.md
  * ==============================================================================
  *
- * MỤC ĐÍCH:
- * File này chỉ kiểm tra độc lập 3 cảm biến khoảng cách VL53L0X và cảm biến góc MPU-6050.
- * Không chạy motor, không kích hoạt encoder. Cực kỳ an toàn, chỉ cần cắm cáp USB vào ESP32.
+ * HARDWARE CONNECTIONS:
+ * - ESP32-C6 3.3V  --> MPU-6050 VCC
+ * - ESP32-C6 GND   --> MPU-6050 GND
+ * - ESP32-C6 GPIO6 --> MPU-6050 SDA
+ * - ESP32-C6 GPIO7 --> MPU-6050 SCL
+ * - (AD0 pin on MPU-6050 should be GND or floating for address 0x68)
  *
- * SƠ ĐỒ CHÂN (THEO MASTER PROMPT):
- * - I2C SDA       : GPIO 6
- * - I2C SCL       : GPIO 7
- * - ToF Trái XSHUT : GPIO 10  (Địa chỉ I2C mới: 0x30)
- * - ToF Trước XSHUT: GPIO 11  (Địa chỉ I2C mới: 0x31)
- * - ToF Phải XSHUT : GPIO 14  (Địa chỉ I2C mới: 0x32)
- * - MPU-6050      : Địa chỉ 0x68
- * - Cấp nguồn cảm biến: 3.3V và GND từ ESP32-C6.
- *
- * THƯ VIỆN CẦN CÓ TRÊN ARDUINO IDE:
- * - "Adafruit_VL53L0X" (vào Library Manager tìm và cài đặt).
+ * ARDUINO IDE SETTINGS:
+ * 1. Board: "ESP32C6 Dev Module"
+ * 2. Tools -> "USB CDC On Boot" -> "Enabled"  <-- CRITICAL for Serial output!
+ * 3. Serial Monitor: 115200 baud
  * ==============================================================================
  */
 
+#include <Arduino.h>
 #include <Wire.h>
-#include <Adafruit_VL53L0X.h>
 
-// --- Định nghĩa chân phần cứng ---
-constexpr uint8_t PIN_I2C_SDA     = 6;
-constexpr uint8_t PIN_I2C_SCL     = 7;
+// --- Authoritative I2C Pinout ---
+constexpr uint8_t PIN_I2C_SDA  = 6;
+constexpr uint8_t PIN_I2C_SCL  = 7;
+constexpr uint8_t ADDR_MPU6050 = 0x68;
 
-constexpr uint8_t PIN_XSHUT_LEFT  = 10;
-constexpr uint8_t PIN_XSHUT_FRONT = 11;
-constexpr uint8_t PIN_XSHUT_RIGHT = 14;
+// Register Map for MPU-6050
+constexpr uint8_t REG_PWR_MGMT_1   = 0x6B;
+constexpr uint8_t REG_ACCEL_XOUT_H = 0x3B;
+constexpr uint8_t REG_WHO_AM_I     = 0x75;
 
-// --- Địa chỉ I2C sau khi gán tuần tự ---
-constexpr uint8_t ADDR_TOF_LEFT   = 0x30;
-constexpr uint8_t ADDR_TOF_FRONT  = 0x31;
-constexpr uint8_t ADDR_TOF_RIGHT  = 0x32;
-constexpr uint8_t ADDR_MPU6050    = 0x68;
+bool mpuDetected = false;
 
-// Đối tượng cảm biến VL53L0X
-Adafruit_VL53L0X loxLeft;
-Adafruit_VL53L0X loxFront;
-Adafruit_VL53L0X loxRight;
-
-bool leftOk  = false;
-bool frontOk = false;
-bool rightOk = false;
-bool imuOk   = false;
-
-// Hàm quét toàn bộ bus I2C để kiểm tra thiết bị có mặt
+// Scan I2C bus to verify physical connection
 void scanI2CBus() {
-  Serial.println(F("\n--- [I2C SCANNER] ĐANG QUÉT CÁC THIẾT BỊ TRÊN BUS I2C ---"));
+  Serial.println(F("\n--- [I2C SCAN] Scanning bus on SDA=GPIO6, SCL=GPIO7 ---"));
   uint8_t count = 0;
   for (uint8_t addr = 1; addr < 127; addr++) {
     Wire.beginTransmission(addr);
     if (Wire.endTransmission() == 0) {
-      Serial.printf(" > Thấy thiết bị tại địa chỉ: 0x%02X", addr);
-      if (addr == 0x29)            Serial.print(F(" (VL53L0X Mặc định - Chưa đổi)"));
-      else if (addr == ADDR_TOF_LEFT)  Serial.print(F(" (ToF TRÁI - OK)"));
-      else if (addr == ADDR_TOF_FRONT) Serial.print(F(" (ToF TRƯỚC - OK)"));
-      else if (addr == ADDR_TOF_RIGHT) Serial.print(F(" (ToF PHẢI - OK)"));
-      else if (addr == ADDR_MPU6050)   Serial.print(F(" (MPU-6050 IMU - OK)"));
+      Serial.printf(" > Found device at I2C address: 0x%02X", addr);
+      if (addr == ADDR_MPU6050) {
+        Serial.print(F(" [MPU-6050 IMU - MATCH!]"));
+        mpuDetected = true;
+      }
       Serial.println();
       count++;
     }
   }
+
   if (count == 0) {
-    Serial.println(F("[!] CẢNH BÁO: Không tìm thấy bất kỳ thiết bị I2C nào!"));
-    Serial.println(F("    Vui lòng kiểm tra lại dây 3.3V, GND, SDA (GPIO 6), SCL (GPIO 7)."));
+    Serial.println(F("[!] WARNING: No I2C devices found!"));
+    Serial.println(F("    Checklist:"));
+    Serial.println(F("    1. Is VCC connected to 3.3V?"));
+    Serial.println(F("    2. Is GND connected to Common GND?"));
+    Serial.println(F("    3. Is SDA connected to GPIO 6?"));
+    Serial.println(F("    4. Is SCL connected to GPIO 7?"));
+  } else if (!mpuDetected) {
+    Serial.println(F("[!] Device found on I2C, but NOT at address 0x68. Check AD0 pin wiring."));
   } else {
-    Serial.printf("-> Quét xong. Tìm thấy %d thiết bị.\n", count);
+    Serial.println(F("[OK] MPU-6050 physically detected on I2C bus."));
   }
-  Serial.println(F("----------------------------------------------------------\n"));
+  Serial.println(F("----------------------------------------------------\n"));
 }
 
-// Hàm khởi tạo tuần tự 3 cảm biến VL53L0X theo mục số 5 của Master Prompt
-void initToFSensors() {
-  Serial.println(F("[ToF] Bắt đầu quy trình khởi tạo tuần tự 3 cảm biến VL53L0X..."));
+// Wake up MPU-6050 and check WHO_AM_I register
+bool initMPU6050() {
+  Serial.println(F("[IMU] Initializing MPU-6050..."));
 
-  // Bước 1: Kéo tất cả chân XSHUT xuống LOW để tắt toàn bộ 3 cảm biến
-  pinMode(PIN_XSHUT_LEFT, OUTPUT);
-  pinMode(PIN_XSHUT_FRONT, OUTPUT);
-  pinMode(PIN_XSHUT_RIGHT, OUTPUT);
-
-  digitalWrite(PIN_XSHUT_LEFT, LOW);
-  digitalWrite(PIN_XSHUT_FRONT, LOW);
-  digitalWrite(PIN_XSHUT_RIGHT, LOW);
-  delay(30);
-
-  // Bước 2: Bật cảm biến TRÁI -> Đổi địa chỉ sang 0x30
-  Serial.println(F("[ToF] Đang bật cảm biến TRÁI (GPIO 10)..."));
-  digitalWrite(PIN_XSHUT_LEFT, HIGH);
-  delay(30);
-  if (loxLeft.begin(ADDR_TOF_LEFT, false, &Wire)) {
-    leftOk = true;
-    Serial.println(F(" -> [OK] Cảm biến Trái đã nhận địa chỉ 0x30"));
-  } else {
-    Serial.println(F(" -> [LỖI] Không thể gán địa chỉ cho cảm biến Trái!"));
-  }
-
-  // Bước 3: Bật cảm biến TRƯỚC -> Đổi địa chỉ sang 0x31
-  Serial.println(F("[ToF] Đang bật cảm biến TRƯỚC (GPIO 11)..."));
-  digitalWrite(PIN_XSHUT_FRONT, HIGH);
-  delay(30);
-  if (loxFront.begin(ADDR_TOF_FRONT, false, &Wire)) {
-    frontOk = true;
-    Serial.println(F(" -> [OK] Cảm biến Trước đã nhận địa chỉ 0x31"));
-  } else {
-    Serial.println(F(" -> [LỖI] Không thể gán địa chỉ cho cảm biến Trước!"));
-  }
-
-  // Bước 4: Bật cảm biến PHẢI -> Đổi địa chỉ sang 0x32
-  Serial.println(F("[ToF] Đang bật cảm biến PHẢI (GPIO 14)..."));
-  digitalWrite(PIN_XSHUT_RIGHT, HIGH);
-  delay(30);
-  if (loxRight.begin(ADDR_TOF_RIGHT, false, &Wire)) {
-    rightOk = true;
-    Serial.println(F(" -> [OK] Cảm biến Phải đã nhận địa chỉ 0x32"));
-  } else {
-    Serial.println(F(" -> [LỖI] Không thể gán địa chỉ cho cảm biến Phải!"));
-  }
-}
-
-// Khởi tạo đánh thức MPU-6050
-void initMPU() {
-  Serial.println(F("[IMU] Đang khởi tạo MPU-6050 tại địa chỉ 0x68..."));
+  // Check WHO_AM_I register (should return 0x68)
   Wire.beginTransmission(ADDR_MPU6050);
-  Wire.write(0x6B); // Thanh ghi quản lý nguồn PWR_MGMT_1
-  Wire.write(0x00); // Ghi 0 để đánh thức chip
-  if (Wire.endTransmission() == 0) {
-    imuOk = true;
-    Serial.println(F(" -> [OK] MPU-6050 đã thức giấc và sẵn sàng!"));
+  Wire.write(REG_WHO_AM_I);
+  if (Wire.endTransmission(false) == 0) {
+    if (Wire.requestFrom((uint8_t)ADDR_MPU6050, (size_t)1, true) == 1) {
+      uint8_t whoami = Wire.read();
+      Serial.printf(" > WHO_AM_I register: 0x%02X (Expected: 0x68)\n", whoami);
+    }
+  }
+
+  // Wake up MPU-6050: Write 0 to PWR_MGMT_1 register
+  Wire.beginTransmission(ADDR_MPU6050);
+  Wire.write(REG_PWR_MGMT_1);
+  Wire.write(0x00);
+  uint8_t err = Wire.endTransmission();
+
+  if (err == 0) {
+    Serial.println(F("[OK] MPU-6050 woke up and is ready to stream data!\n"));
+    return true;
   } else {
-    imuOk = false;
-    Serial.println(F(" -> [LỖI] Không phản hồi từ MPU-6050 tại 0x68!"));
+    Serial.printf("[ERROR] Failed to wake up MPU-6050! Wire error code: %d\n", err);
+    return false;
   }
 }
 
 void setup() {
   Serial.begin(115200);
 
-  // Đợi cổng USB-CDC trên ESP32-C6 nhận diện (tối đa 3 giây)
+  // Handshake for ESP32-C6 native USB-CDC
   uint32_t t0 = millis();
   while (!Serial && (millis() - t0 < 3000)) {
     delay(10);
@@ -149,93 +105,67 @@ void setup() {
   delay(500);
 
   Serial.println(F("\n\n========================================================"));
-  Serial.println(F("  CHƯƠNG TRÌNH TEST CẢM BIẾN: ToF VL53L0X & IMU MPU-6050 "));
-  Serial.println(F("  ESP32-C6 DEVKITC-1 - KẾT NỐI SERIAL THÀNH CÔNG!       "));
+  Serial.println(F("     MICROMOUSE ESP32-C6: MPU-6050 IMU TEST BENCH       "));
   Serial.println(F("========================================================"));
 
-  // Khởi động bus I2C trên GPIO 6 & GPIO 7 với Timeout chống treo
+  // Initialize I2C with timeout protection
   Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL, 100000);
-  Wire.setTimeOut(100); // Tránh bị treo vi điều khiển nếu dây I2C lỏng
+  Wire.setTimeOut(100);
   delay(100);
 
-  // Khởi tạo các cảm biến
-  initToFSensors();
-  initMPU();
-
-  // Quét I2C một lần để người dùng xác nhận kết quả
+  // Scan bus
   scanI2CBus();
 
-  Serial.println(F("Bắt đầu đọc dữ liệu liên tục (Chu kỳ 100ms)..."));
-  Serial.println(F("Gợi ý: Dùng tay/bìa che lần lượt 3 hướng để thấy mm thay đổi."));
-  Serial.println(F("--------------------------------------------------------------------------------"));
+  // Initialize IMU
+  if (mpuDetected) {
+    initMPU6050();
+    Serial.println(F("Starting continuous telemetry (10 Hz update rate)..."));
+    Serial.println(F("Tip: Tilt the robot to see Pitch/Roll and rotate to see GyroZ change."));
+    Serial.println(F("--------------------------------------------------------------------------------"));
+  } else {
+    Serial.println(F("[!] Setup aborted: MPU-6050 not responding."));
+  }
 }
 
 void loop() {
-  uint16_t distLeft = 9999, distFront = 9999, distRight = 9999;
-  bool validL = false, validF = false, validR = false;
+  if (!mpuDetected) {
+    delay(1000);
+    return;
+  }
 
-  // 1. Đọc cảm biến khoảng cách TRÁI
-  if (leftOk) {
-    VL53L0X_RangingMeasurementData_t m;
-    loxLeft.rangingTest(&m, false);
-    if (m.RangeStatus != 4) {
-      distLeft = m.RangeMilliMeter;
-      validL = true;
+  // Read 14 bytes from MPU-6050 (Accel X/Y/Z, Temp, Gyro X/Y/Z)
+  Wire.beginTransmission(ADDR_MPU6050);
+  Wire.write(REG_ACCEL_XOUT_H);
+  if (Wire.endTransmission(false) == 0) {
+    if (Wire.requestFrom((uint8_t)ADDR_MPU6050, (size_t)14, true) == 14) {
+      int16_t rawAx = (Wire.read() << 8) | Wire.read();
+      int16_t rawAy = (Wire.read() << 8) | Wire.read();
+      int16_t rawAz = (Wire.read() << 8) | Wire.read();
+      int16_t rawTemp = (Wire.read() << 8) | Wire.read();
+      int16_t rawGx = (Wire.read() << 8) | Wire.read();
+      int16_t rawGy = (Wire.read() << 8) | Wire.read();
+      int16_t rawGz = (Wire.read() << 8) | Wire.read();
+
+      // Convert to physical units
+      // Accelerometer full scale +/- 2g: sensitivity = 16384 LSB/g
+      float ax = (float)rawAx / 16384.0f;
+      float ay = (float)rawAy / 16384.0f;
+      float az = (float)rawAz / 16384.0f;
+
+      // Gyroscope full scale +/- 250 deg/s: sensitivity = 131 LSB/(deg/s)
+      float gx = (float)rawGx / 131.0f;
+      float gy = (float)rawGy / 131.0f;
+      float gz = (float)rawGz / 131.0f;
+
+      // Calculate approximate Pitch and Roll angles in degrees
+      float pitch = atan2(ay, sqrt(ax * ax + az * az)) * 180.0f / PI;
+      float roll  = atan2(-ax, az) * 180.0f / PI;
+
+      // Print telemetry formatted
+      Serial.printf("ACCEL [g]: X=%+5.2f Y=%+5.2f Z=%+5.2f | GYRO [dps]: Z(Yaw)=%+6.1f | ANGLES: Pitch=%+5.1f* Roll=%+5.1f*\n",
+                    ax, ay, az, gz, pitch, roll);
     }
   }
 
-  // 2. Đọc cảm biến khoảng cách TRƯỚC
-  if (frontOk) {
-    VL53L0X_RangingMeasurementData_t m;
-    loxFront.rangingTest(&m, false);
-    if (m.RangeStatus != 4) {
-      distFront = m.RangeMilliMeter;
-      validF = true;
-    }
-  }
-
-  // 3. Đọc cảm biến khoảng cách PHẢI
-  if (rightOk) {
-    VL53L0X_RangingMeasurementData_t m;
-    loxRight.rangingTest(&m, false);
-    if (m.RangeStatus != 4) {
-      distRight = m.RangeMilliMeter;
-      validR = true;
-    }
-  }
-
-  // 4. Đọc dữ liệu MPU-6050 (Gia tốc trục Z và Tốc độ góc quay quanh trục Z)
-  int16_t az = 0, gz = 0;
-  if (imuOk) {
-    Wire.beginTransmission(ADDR_MPU6050);
-    Wire.write(0x3B); // Đọc từ thanh ghi ACCEL_XOUT_H
-    if (Wire.endTransmission(false) == 0) {
-      if (Wire.requestFrom((uint8_t)ADDR_MPU6050, (size_t)14, true) == 14) {
-        Wire.read(); Wire.read(); // ax
-        Wire.read(); Wire.read(); // ay
-        az = (Wire.read() << 8) | Wire.read(); // az (Trục thẳng đứng)
-        Wire.read(); Wire.read(); // temp
-        Wire.read(); Wire.read(); // gx
-        Wire.read(); Wire.read(); // gy
-        gz = (Wire.read() << 8) | Wire.read(); // gz (Vận tốc góc xoay z)
-      }
-    }
-  }
-
-  // 5. In kết quả dạng bảng đẹp mắt trên Serial Monitor
-  Serial.print(F("ToF [mm] -> Trái: "));
-  if (validL) Serial.printf("%4d", distLeft); else Serial.print(F("----"));
-
-  Serial.print(F("  |  Trước: "));
-  if (validF) Serial.printf("%4d", distFront); else Serial.print(F("----"));
-
-  Serial.print(F("  |  Phải: "));
-  if (validR) Serial.printf("%4d", distRight); else Serial.print(F("----"));
-
-  if (imuOk) {
-    Serial.printf("  ||  IMU [Raw] -> AccZ: %6d  GyrZ (Xoay): %6d", az, gz);
-  }
-  Serial.println();
-
-  delay(100); // Tần số cập nhật 10 Hz
+  delay(100); // 10 Hz refresh rate
 }
