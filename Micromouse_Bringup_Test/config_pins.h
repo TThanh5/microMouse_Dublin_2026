@@ -28,7 +28,7 @@ constexpr uint8_t PIN_I2C_SCL = 7;
 // --- 3.5 VL53L0X XSHUT & I2C Addresses ---
 constexpr uint8_t PIN_XSHUT_LEFT  = 10;
 constexpr uint8_t PIN_XSHUT_FRONT = 11;
-constexpr uint8_t PIN_XSHUT_RIGHT = 14;
+constexpr uint8_t PIN_XSHUT_RIGHT = 5;   // Changed from 14 to 5 (GPIO 14 not broken out)
 
 constexpr uint8_t ADDR_VL53L0X_DEFAULT = 0x29;
 constexpr uint8_t ADDR_VL53L0X_LEFT    = 0x30;
